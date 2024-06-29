@@ -1,13 +1,10 @@
 pragma solidity =0.5.16;
 
 import './provableAPI_0.5.sol';
-import './SafeMath.sol';
 
 contract Coinflip is usingProvable {
-    using SafeMath for uint;
     
     struct Bet {
-        address playerAddress;
         uint betValue;
         uint headsTails;
         uint setRandomPrice;
@@ -27,95 +24,79 @@ contract Coinflip is usingProvable {
     uint256 constant GAS_FOR_CALLBACK = 200000;
     uint256 constant NUM_RANDOM_BYTES_REQUESTED = 1;
     
-    address payable public owner = msg.sender;
-   
+    address payable public owner;
     bool public freeCallback = true;
 
-    constructor() public payable{
+    constructor() public payable {
         owner = msg.sender;
         contractBalance = msg.value;
     }
     
     modifier onlyOwner() {
-        require(msg.sender == owner);
+        require(msg.sender == owner, "Not owner");
         _;
     }
 
     function flip(uint256 oneZero) public payable {
-        require(contractBalance > msg.value, "We don't have enough funds");
-        uint256 randomPrice;
+        require(contractBalance > msg.value, "Insufficient contract balance");
 
-        if(freeCallback == false){
-            randomPrice = getQueryPrice();
-        } else {
-            freeCallback = false;
-            randomPrice = 0;
-        }
+        uint256 randomPrice = freeCallback ? 0 : getQueryPrice();
+        freeCallback = false;
 
-        uint256 QUERY_EXECUTION_DELAY = 0;
         bytes32 queryId = provable_newRandomDSQuery(
-            QUERY_EXECUTION_DELAY,
+            0,
             NUM_RANDOM_BYTES_REQUESTED,
             GAS_FOR_CALLBACK
-            );
+        );
+        
         emit logNewProvableQuery("Message sent. Waiting for an answer...");
         emit sentQueryId(msg.sender, queryId);
 
         afterWaiting[queryId] = msg.sender;
-
-        Bet memory newBetter;
-        newBetter.playerAddress = msg.sender;
-        newBetter.betValue = msg.value; 
-        newBetter.headsTails = oneZero;
-        newBetter.setRandomPrice = randomPrice;
-        
-        waiting[msg.sender] = newBetter;
+        waiting[msg.sender] = Bet(msg.value, oneZero, randomPrice);
     }
     
     function __callback(bytes32 _queryId, string memory _result) public {
         require(msg.sender == provable_cbAddress());
-        
-        uint256 flipResult = SafeMath.mod(uint256(keccak256(abi.encodePacked(_result))), 2);
 
+        uint256 flipResult = uint256(keccak256(abi.encodePacked(_result))) % 2;
         address _player = afterWaiting[_queryId];
-        
         Bet memory postBet = waiting[_player];
 
         if(flipResult == postBet.headsTails){
-            uint winAmount = SafeMath.sub(SafeMath.mul(postBet.betValue, 2), postBet.setRandomPrice); 
-            contractBalance = SafeMath.sub(contractBalance, postBet.betValue);
-            playerWinnings[_player] = SafeMath.add(playerWinnings[_player], winAmount);
-           
+            uint winAmount = postBet.betValue * 2 - postBet.setRandomPrice;
+            contractBalance -= postBet.betValue;
+            playerWinnings[_player] += winAmount;
             emit callbackReceived(_queryId, "Winner", postBet.betValue);
         } else {
-            contractBalance = SafeMath.add(contractBalance, SafeMath.sub(postBet.betValue, postBet.setRandomPrice));
+            contractBalance += postBet.betValue - postBet.setRandomPrice;
             emit callbackReceived(_queryId, "Loser", postBet.betValue);
         }
     }
     
     function getQueryPrice() internal returns(uint256 _price) {
-        _price = provable_getPrice("price", GAS_FOR_CALLBACK);
+        return provable_getPrice("price", GAS_FOR_CALLBACK);
     }
     
-    
     function withdrawUserWinnings() public {
-        require(playerWinnings[msg.sender] > 0, "No funds to withdraw");
         uint toTransfer = playerWinnings[msg.sender];
+        require(toTransfer > 0, "No funds to withdraw");
+
         playerWinnings[msg.sender] = 0;
         msg.sender.transfer(toTransfer);
         emit userWithdrawal(msg.sender, toTransfer);
     }
     
-    function getWinningsBalance() public view returns(uint){
+    function getWinningsBalance() public view returns(uint) {
         return playerWinnings[msg.sender];
     }
     
     function fundContract() public payable onlyOwner {
-        contractBalance = SafeMath.add(contractBalance, msg.value);
+        contractBalance += msg.value;
     }
     
     function fundWinnings() public payable onlyOwner {
-        playerWinnings[msg.sender] = SafeMath.add(playerWinnings[msg.sender], msg.value);
+        playerWinnings[msg.sender] += msg.value;
     }
     
     function withdrawAll() public onlyOwner {
